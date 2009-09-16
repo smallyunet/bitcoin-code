@@ -1,6 +1,0 @@
-Known bugs:
-- The program can't be closed when "close to tray" is checked in the settings
-- Tray icon menu functionality not complete
-- For some reason, CreateHardLink doesn't add a shortcut to the startup folder
-- "Ask before closing" functionality not implemented
-- When the program is minimized to tray, double clicking the icon only restores it to the task bar
