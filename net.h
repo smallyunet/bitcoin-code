@@ -29,7 +29,7 @@ void AbandonRequests(void (*fn)(void*, CDataStream&), void* param1);
 bool AnySubscribed(unsigned int nChannel);
 bool StartNode(string& strError=REF(string()));
 bool StopNode();
-void CheckForShutdown(int n);
+bool CheckForShutdown(int n);
 
 
 
@@ -142,73 +142,61 @@ public:
 
     CAddress()
     {
-        Init();
-    }
-
-    CAddress(unsigned int ipIn, unsigned short portIn=DEFAULT_PORT, uint64 nServicesIn=NODE_NETWORK)
-    {
-        Init();
-        ip = ipIn;
-        port = portIn;
-        nServices = nServicesIn;
-    }
-
-    explicit CAddress(const struct sockaddr_in& sockaddr, uint64 nServicesIn=NODE_NETWORK)
-    {
-        Init();
-        ip = sockaddr.sin_addr.s_addr;
-        port = sockaddr.sin_port;
-        nServices = nServicesIn;
-    }
-
-    explicit CAddress(const char* pszIn, uint64 nServicesIn=NODE_NETWORK)
-    {
-        Init();
-        SetAddress(pszIn);
-        nServices = nServicesIn;
-    }
-
-    explicit CAddress(string strIn, uint64 nServicesIn=NODE_NETWORK)
-    {
-        Init();
-        SetAddress(strIn.c_str());
-        nServices = nServicesIn;
-    }
-
-    void Init()
-    {
-        nServices = NODE_NETWORK;
+        nServices = 0;
         memcpy(pchReserved, pchIPv4, sizeof(pchReserved));
-        ip = INADDR_NONE;
+        ip = 0;
         port = DEFAULT_PORT;
         nTime = GetAdjustedTime();
         nLastFailed = 0;
     }
 
-    bool SetAddress(const char* pszIn)
+    CAddress(unsigned int ipIn, unsigned short portIn=DEFAULT_PORT, uint64 nServicesIn=0)
     {
+        nServices = nServicesIn;
+        memcpy(pchReserved, pchIPv4, sizeof(pchReserved));
+        ip = ipIn;
+        port = portIn;
+        nTime = GetAdjustedTime();
+        nLastFailed = 0;
+    }
+
+    explicit CAddress(const struct sockaddr_in& sockaddr, uint64 nServicesIn=0)
+    {
+        nServices = nServicesIn;
+        memcpy(pchReserved, pchIPv4, sizeof(pchReserved));
+        ip = sockaddr.sin_addr.s_addr;
+        port = sockaddr.sin_port;
+        nTime = GetAdjustedTime();
+        nLastFailed = 0;
+    }
+
+    explicit CAddress(const char* pszIn, uint64 nServicesIn=0)
+    {
+        nServices = nServicesIn;
+        memcpy(pchReserved, pchIPv4, sizeof(pchReserved));
         ip = INADDR_NONE;
         port = DEFAULT_PORT;
+        nTime = GetAdjustedTime();
+        nLastFailed = 0;
+
         char psz[100];
-        strlcpy(psz, pszIn, sizeof(psz));
+        if (strlen(pszIn) > ARRAYLEN(psz)-1)
+            return;
+        strcpy(psz, pszIn);
         unsigned int a=0, b=0, c=0, d=0, e=0;
         if (sscanf(psz, "%u.%u.%u.%u:%u", &a, &b, &c, &d, &e) < 4)
-            return false;
+            return;
         char* pszPort = strchr(psz, ':');
         if (pszPort)
         {
             *pszPort++ = '\0';
             port = htons(atoi(pszPort));
-            if (atoi(pszPort) < 0 || atoi(pszPort) > USHRT_MAX)
+            if (atoi(pszPort) > USHRT_MAX)
                 port = htons(USHRT_MAX);
+            if (atoi(pszPort) < 0)
+                port = htons(0);
         }
         ip = inet_addr(psz);
-        return IsValid();
-    }
-
-    bool SetAddress(string strIn)
-    {
-        return SetAddress(strIn.c_str());
     }
 
     IMPLEMENT_SERIALIZE
@@ -280,17 +268,7 @@ public:
 
     bool IsRoutable() const
     {
-        return !(GetByte(3) == 10 ||
-                 (GetByte(3) == 192 && GetByte(2) == 168) ||
-                 GetByte(3) == 127 ||
-                 GetByte(3) == 0 ||
-                 ip == 0 ||
-                 ip == INADDR_NONE);
-    }
-
-    bool IsValid() const
-    {
-        return (ip != 0 && ip != INADDR_NONE && port != htons(USHRT_MAX));
+        return !(GetByte(3) == 10 || (GetByte(3) == 192 && GetByte(2) == 168) || GetByte(3) == 127 || GetByte(3) == 0);
     }
 
     unsigned char GetByte(int n) const

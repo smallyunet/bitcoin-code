@@ -25,6 +25,7 @@ DEFINE_EVENT_TYPE(wxEVT_TABLEDELETED)
 CMainFrame* pframeMain = NULL;
 CMyTaskBarIcon* ptaskbaricon = NULL;
 map<string, string> mapAddressBook;
+map<string, string> mapArgs;
 bool fRandSendTest = false;
 void RandSend();
 extern int g_isPainting;
@@ -282,6 +283,7 @@ CMainFrame::CMainFrame(wxWindow* parent) : CMainFrameBase(parent)
     fRefreshListCtrl = false;
     fRefreshListCtrlRunning = false;
     fOnSetFocusAddress = false;
+    pindexBestLast = NULL;
     m_choiceFilter->SetSelection(0);
     m_staticTextBalance->SetLabel(FormatMoney(GetBalance()) + "  ");
     m_listCtrl->SetFocus();
@@ -505,7 +507,6 @@ bool CMainFrame::InsertTransaction(const CWalletTx& wtx, bool fNew, int nIndex)
     string strStatus = FormatTxStatus(wtx);
     map<string, string> mapValue = wtx.mapValue;
     wtx.nLinesDisplayed = 1;
-    nListViewUpdated++;
 
     // Filter
     if (wtx.IsCoinBase())
@@ -711,6 +712,48 @@ bool CMainFrame::InsertTransaction(const CWalletTx& wtx, bool fNew, int nIndex)
     return true;
 }
 
+void CMainFrame::RefreshStatus()
+{
+    static int nLastTop;
+    int nTop = max((int)m_listCtrl->GetTopItem(), 0);
+    if (nTop == nLastTop && pindexBestLast == pindexBest)
+        return;
+
+    TRY_CRITICAL_BLOCK(cs_mapWallet)
+    {
+        int nStart = nTop;
+        int nEnd = min(nStart + 100, m_listCtrl->GetItemCount());
+        if (pindexBestLast == pindexBest)
+        {
+            if (nStart >= nLastTop && nStart < nLastTop + 100)
+                nStart = nLastTop + 100;
+            if (nEnd >= nLastTop && nEnd < nLastTop + 100)
+                nEnd = nLastTop;
+        }
+        nLastTop = nTop;
+        pindexBestLast = pindexBest;
+
+        for (int nIndex = nStart; nIndex < min(nEnd, m_listCtrl->GetItemCount()); nIndex++)
+        {
+            uint256 hash((string)GetItemText(m_listCtrl, nIndex, 1));
+            map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
+            if (mi == mapWallet.end())
+            {
+                printf("CMainFrame::RefreshStatus() : tx not found in mapWallet\n");
+                continue;
+            }
+            CWalletTx& wtx = (*mi).second;
+            if (wtx.IsCoinBase() || wtx.GetTxTime() != wtx.nTimeDisplayed)
+            {
+                if (!InsertTransaction(wtx, false, nIndex))
+                    m_listCtrl->DeleteItem(nIndex--);
+            }
+            else
+                m_listCtrl->SetItem(nIndex, 2, FormatTxStatus(wtx));
+        }
+    }
+}
+
 void CMainFrame::RefreshListCtrl()
 {
     fRefreshListCtrl = true;
@@ -789,104 +832,21 @@ void CMainFrame::OnIdle(wxIdleEvent& event)
     }
 }
 
-void CMainFrame::RefreshStatusColumn()
-{
-    static int nLastTop;
-    static CBlockIndex* pindexLastBest;
-    static unsigned int nLastRefreshed;
-
-    int nTop = max((int)m_listCtrl->GetTopItem(), 0);
-    if (nTop == nLastTop && pindexLastBest == pindexBest)
-        return;
-
-    TRY_CRITICAL_BLOCK(cs_mapWallet)
-    {
-        int nStart = nTop;
-        int nEnd = min(nStart + 100, m_listCtrl->GetItemCount());
-
-        if (pindexLastBest == pindexBest && nLastRefreshed == nListViewUpdated)
-        {
-            // If no updates, only need to do the part that moved onto the screen
-            if (nStart >= nLastTop && nStart < nLastTop + 100)
-                nStart = nLastTop + 100;
-            if (nEnd >= nLastTop && nEnd < nLastTop + 100)
-                nEnd = nLastTop;
-        }
-        nLastTop = nTop;
-        pindexLastBest = pindexBest;
-        nLastRefreshed = nListViewUpdated;
-
-        for (int nIndex = nStart; nIndex < min(nEnd, m_listCtrl->GetItemCount()); nIndex++)
-        {
-            uint256 hash((string)GetItemText(m_listCtrl, nIndex, 1));
-            map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
-            if (mi == mapWallet.end())
-            {
-                printf("CMainFrame::RefreshStatusColumn() : tx not found in mapWallet\n");
-                continue;
-            }
-            CWalletTx& wtx = (*mi).second;
-            if (wtx.IsCoinBase() || wtx.GetTxTime() != wtx.nTimeDisplayed)
-            {
-                if (!InsertTransaction(wtx, false, nIndex))
-                    m_listCtrl->DeleteItem(nIndex--);
-            }
-            else
-                m_listCtrl->SetItem(nIndex, 2, FormatTxStatus(wtx));
-        }
-    }
-}
-
 void CMainFrame::OnPaint(wxPaintEvent& event)
 {
     event.Skip();
 }
 
-
-unsigned int nNeedRepaint = 0;
-unsigned int nLastRepaint = 0;
-int64 nLastRepaintTime = 0;
-int64 nRepaintInterval = 500;
-
-void ThreadDelayedRepaint(void* parg)
+void DelayedRepaint(void* parg)
 {
-    while (!fShutdown)
-    {
-        if (nLastRepaint != nNeedRepaint && GetTimeMillis() - nLastRepaintTime >= nRepaintInterval)
-        {
-            nLastRepaint = nNeedRepaint;
-            if (pframeMain)
-            {
-                printf("DelayedRepaint\n");
-                wxPaintEvent event;
-                pframeMain->Refresh();
-                pframeMain->AddPendingEvent(event);
-            }
-        }
-        Sleep(nRepaintInterval);
-    }
-}
-
-void MainFrameRepaint()
-{
-    // This is called by network code that shouldn't access pframeMain
-    // directly because it could still be running after the UI is closed.
-    if (pframeMain)
-    {
-        // Don't repaint too often
-        static int64 nLastRepaintRequest;
-        if (GetTimeMillis() - nLastRepaintRequest < 100)
-        {
-            nNeedRepaint++;
-            return;
-        }
-        nLastRepaintRequest = GetTimeMillis();
-
-        printf("MainFrameRepaint\n");
-        wxPaintEvent event;
-        pframeMain->Refresh();
-        pframeMain->AddPendingEvent(event);
-    }
+    static bool fOneThread;
+    if (fOneThread)
+        return;
+    fOneThread = true;
+    Sleep(1000);
+    printf("DelayedRepaint()\n");
+    MainFrameRepaint();
+    fOneThread = false;
 }
 
 void CMainFrame::OnPaintListCtrl(wxPaintEvent& event)
@@ -894,54 +854,43 @@ void CMainFrame::OnPaintListCtrl(wxPaintEvent& event)
     if (ptaskbaricon)
         ptaskbaricon->UpdateTooltip();
 
-    //
-    // Slower stuff
-    //
-    static int nTransactionCount;
-    bool fPaintedBalance = false;
-    if (GetTimeMillis() - nLastRepaintTime >= nRepaintInterval)
+    // Update listctrl contents
+    if (!vWalletUpdated.empty())
     {
-        nLastRepaint = nNeedRepaint;
-        nLastRepaintTime = GetTimeMillis();
-
-        // Update listctrl contents
-        if (!vWalletUpdated.empty())
-        {
-            TRY_CRITICAL_BLOCK(cs_mapWallet)
-            {
-                bool fInserted = false;
-                foreach(uint256 hash, vWalletUpdated)
-                {
-                    map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
-                    if (mi != mapWallet.end())
-                        fInserted |= InsertTransaction((*mi).second, false);
-                }
-                vWalletUpdated.clear();
-                if (fInserted)
-                    m_listCtrl->ScrollList(0, INT_MAX);
-            }
-        }
-
-        // Balance total
         TRY_CRITICAL_BLOCK(cs_mapWallet)
         {
-            fPaintedBalance = true;
-            m_staticTextBalance->SetLabel(FormatMoney(GetBalance()) + "  ");
-
-            // Count hidden and multi-line transactions
-            nTransactionCount = 0;
-            for (map<uint256, CWalletTx>::iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+            bool fInserted = false;
+            foreach(uint256 hash, vWalletUpdated)
             {
-                CWalletTx& wtx = (*it).second;
-                nTransactionCount += wtx.nLinesDisplayed;
+                map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
+                if (mi != mapWallet.end())
+                    fInserted |= InsertTransaction((*mi).second, false);
             }
+            vWalletUpdated.clear();
+            if (fInserted)
+                m_listCtrl->ScrollList(0, INT_MAX);
         }
     }
-    if (!vWalletUpdated.empty() || !fPaintedBalance)
-        nNeedRepaint++;
 
     // Update status column of visible items only
-    RefreshStatusColumn();
+    RefreshStatus();
+
+    // Balance total
+    bool fRefreshed = false;
+    static int nTransactionCount;
+    TRY_CRITICAL_BLOCK(cs_mapWallet)
+    {
+        fRefreshed = true;
+        m_staticTextBalance->SetLabel(FormatMoney(GetBalance()) + "  ");
+
+        // Count hidden and multi-line transactions
+        nTransactionCount = 0;
+        for (map<uint256, CWalletTx>::iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+        {
+            CWalletTx& wtx = (*it).second;
+            nTransactionCount += wtx.nLinesDisplayed;
+        }
+    }
 
     // Update status bar
     string strGen = "";
@@ -954,9 +903,12 @@ void CMainFrame::OnPaintListCtrl(wxPaintEvent& event)
     string strStatus = strprintf("     %d connections     %d blocks     %d transactions", vNodes.size(), nBestHeight + 1, nTransactionCount);
     m_statusBar->SetStatusText(strStatus, 2);
 
+    // mapWallet was locked, try again later
+    if (!vWalletUpdated.empty() || !fRefreshed)
+        _beginthread(DelayedRepaint, 0, NULL);
+
     m_listCtrl->OnPaint(event);
 }
-
 
 void CrossThreadCall(wxCommandEvent& event)
 {
@@ -1042,6 +994,13 @@ void CMainFrame::OnMenuHelpAbout(wxCommandEvent& event)
 
 void CMainFrame::OnButtonSend(wxCommandEvent& event)
 {
+    /// debug test
+    if (fRandSendTest)
+    {
+        RandSend();
+        return;
+    }
+
     // Toolbar: Send
     CSendDialog dialog(this);
     dialog.ShowModal();
@@ -1725,8 +1684,8 @@ void CSendDialog::OnButtonSend(wxCommandEvent& event)
     else
     {
         // Parse IP address
-        CAddress addr(strAddress);
-        if (!addr.IsValid())
+        CAddress addr(strAddress.c_str());
+        if (addr.ip == 0)
         {
             wxMessageBox("Invalid address  ", "Send Coins");
             return;
@@ -1859,6 +1818,14 @@ void CSendingDialog::OnPaint(wxPaintEvent& event)
         wxMessageBox("Transfer cancelled  ", "Sending...", wxOK, this);
     }
     event.Skip();
+
+    /// debug test
+    if (fRandSendTest && fWorkDone && fSuccess)
+    {
+        Close();
+        Sleep(1000);
+        RandSend();
+    }
 }
 
 
@@ -3338,6 +3305,27 @@ bool CMyApp::OnInit()
     return false;
 }
 
+map<string, string> ParseParameters(int argc, char* argv[])
+{
+    map<string, string> mapArgs;
+    for (int i = 0; i < argc; i++)
+    {
+        char psz[10000];
+        strcpy(psz, argv[i]);
+        char* pszValue = "";
+        if (strchr(psz, '='))
+        {
+            pszValue = strchr(psz, '=');
+            *pszValue++ = '\0';
+        }
+        strlwr(psz);
+        if (psz[0] == '-')
+            psz[0] = '/';
+        mapArgs[psz] = pszValue;
+    }
+    return mapArgs;
+}
+
 bool CMyApp::OnInit2()
 {
 #ifdef _MSC_VER
@@ -3349,27 +3337,10 @@ bool CMyApp::OnInit2()
     // Disable malfunctioning wxWidgets debug assertion
     g_isPainting = 10000;
 #endif
-    wxImage::AddHandler(new wxPNGHandler);
-    SetAppName("Bitcoin");
 
-    ParseParameters(argc, argv);
-    if (mapArgs.count("-?") || mapArgs.count("--help"))
-    {
-        string strUsage =
-            "Usage: bitcoin [options]\t\t\t\t\t\t\n"
-            "Options:\n"
-            "  -gen\t\t  Generate coins\n"
-            "  -gen=0\t\t  Don't generate coins\n"
-            "  -min\t\t  Start minimized\n"
-            "  -datadir=<dir>\t  Specify data directory\n"
-            "  -proxy=<ip:port>\t  Connect through socks4 proxy,\n"
-            "  \t\t     e.g. -proxy=127.0.0.1:9050 to use TOR\n"
-            "  -addnode=<ip>\t  Add a node to connect to\n"
-            "  -connect=<ip>\t  Connect only to the specified node\n"
-            "  -?\t\t  This help message\n";
-        wxMessageBox(strUsage, "Bitcoin", wxOK);
-        exit(0);
-    }
+    //// debug print
+    printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    printf("Bitcoin version %d, Windows version %08x\n", VERSION, GetVersion());
 
     //
     // Limit to single instance per user
@@ -3411,31 +3382,31 @@ bool CMyApp::OnInit2()
     //
     // Parameters
     //
-    if (mapArgs.count("-datadir"))
-        strlcpy(pszSetDataDir, mapArgs["-datadir"].c_str(), sizeof(pszSetDataDir));
+    wxImage::AddHandler(new wxPNGHandler);
+    mapArgs = ParseParameters(argc, argv);
 
-    if (mapArgs.count("-debug"))
+    if (mapArgs.count("/datadir"))
+        strSetDataDir = mapArgs["/datadir"];
+
+    if (mapArgs.count("/debug"))
         fDebug = true;
 
-    if (mapArgs.count("-printtodebugger"))
+    if (mapArgs.count("/printtodebugger"))
         fPrintToDebugger = true;
 
-    printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-    printf("Bitcoin version %d, Windows version %08x\n", VERSION, GetVersion());
-
-    if (mapArgs.count("-dropmessages"))
+    if (mapArgs.count("/dropmessages"))
     {
-        nDropMessagesTest = atoi(mapArgs["-dropmessages"]);
+        nDropMessagesTest = atoi(mapArgs["/dropmessages"]);
         if (nDropMessagesTest == 0)
             nDropMessagesTest = 20;
     }
 
-    if (mapArgs.count("-loadblockindextest"))
+    if (mapArgs.count("/loadblockindextest"))
     {
         CTxDB txdb("r");
         txdb.LoadBlockIndex();
         PrintBlockTree();
-        exit(0);
+        ExitProcess(0);
     }
 
     //
@@ -3446,22 +3417,22 @@ bool CMyApp::OnInit2()
     int64 nStart;
 
     printf("Loading addresses...\n");
-    nStart = GetTimeMillis();
+    nStart = PerformanceCounter();
     if (!LoadAddresses())
         strErrors += "Error loading addr.dat      \n";
-    printf(" addresses   %15"PRI64d"ms\n", GetTimeMillis() - nStart);
+    printf(" addresses   %15"PRI64d"\n", PerformanceCounter() - nStart);
 
     printf("Loading block index...\n");
-    nStart = GetTimeMillis();
+    nStart = PerformanceCounter();
     if (!LoadBlockIndex())
         strErrors += "Error loading blkindex.dat      \n";
-    printf(" block index %15"PRI64d"ms\n", GetTimeMillis() - nStart);
+    printf(" block index %15"PRI64d"\n", PerformanceCounter() - nStart);
 
     printf("Loading wallet...\n");
-    nStart = GetTimeMillis();
+    nStart = PerformanceCounter();
     if (!LoadWallet(fFirstRun))
         strErrors += "Error loading wallet.dat      \n";
-    printf(" wallet      %15"PRI64d"ms\n", GetTimeMillis() - nStart);
+    printf(" wallet      %15"PRI64d"\n", PerformanceCounter() - nStart);
 
     printf("Done loading\n");
 
@@ -3486,58 +3457,44 @@ bool CMyApp::OnInit2()
     //
     // Parameters
     //
-    if (mapArgs.count("-printblockindex") || mapArgs.count("-printblocktree"))
+    if (mapArgs.count("/printblockindex") || mapArgs.count("/printblocktree"))
     {
         PrintBlockTree();
         OnExit();
         return false;
     }
 
-    if (mapArgs.count("-gen"))
-    {
-        if (mapArgs["-gen"].empty())
-            fGenerateBitcoins = true;
-        else
-            fGenerateBitcoins = atoi(mapArgs["-gen"].c_str());
-    }
-
-    if (mapArgs.count("-proxy"))
+    if (mapArgs.count("/proxy"))
     {
         fUseProxy = true;
-        addrProxy = CAddress(mapArgs["-proxy"]);
-        if (!addrProxy.IsValid())
+        addrProxy = CAddress(mapArgs["/proxy"].c_str());
+        if (addrProxy.ip == INADDR_NONE)
         {
-            wxMessageBox("Invalid -proxy address", "Bitcoin");
+            wxMessageBox("Invalid /proxy address", "Bitcoin");
             OnExit();
-            return false;
         }
         CWalletDB walletdb;
         walletdb.WriteSetting("fUseProxy", fUseProxy);
         walletdb.WriteSetting("addrProxy", addrProxy);
     }
 
-    if (mapArgs.count("-addnode"))
+    if (mapArgs.count("/gen"))
     {
-        CAddrDB addrdb;
-        foreach(string strAddr, mapMultiArgs["-addnode"])
-        {
-            CAddress addr(strAddr, NODE_NETWORK);
-            if (addr.IsValid())
-                AddAddress(addrdb, addr);
-        }
+        if (mapArgs["/gen"].empty())
+            fGenerateBitcoins = true;
+        else
+            fGenerateBitcoins = atoi(mapArgs["/gen"].c_str());
     }
 
     //
     // Create the main frame window
     //
     pframeMain = new CMainFrame(NULL);
-    if (mapArgs.count("-min"))
+    if (mapArgs.count("/min"))
         pframeMain->Iconize(true);
     pframeMain->Show(true);  // have to show first to get taskbar button to hide
     pframeMain->Show(!fMinimizeToTray || !pframeMain->IsIconized());
     ptaskbaricon->Show(fMinimizeToTray);
-
-    _beginthread(ThreadDelayedRepaint, 0, NULL);
 
     if (!CheckDiskSpace())
     {
@@ -3559,7 +3516,7 @@ bool CMyApp::OnInit2()
     //
     // Tests
     //
-    if (argc >= 2 && stricmp(argv[1], "-send") == 0)
+    if (argc >= 2 && stricmp(argv[1], "/send") == 0)
     {
         int64 nValue = 1;
         if (argc >= 3)
@@ -3568,7 +3525,7 @@ bool CMyApp::OnInit2()
         string strAddress;
         if (argc >= 4)
             strAddress = argv[3];
-        CAddress addr(strAddress);
+        CAddress addr(strAddress.c_str());
 
         CWalletTx wtx;
         wtx.mapValue["to"] = strAddress;
@@ -3579,6 +3536,15 @@ bool CMyApp::OnInit2()
         CSendingDialog* pdialog = new CSendingDialog(pframeMain, addr, nValue, wtx);
         if (!pdialog->ShowModal())
             return false;
+    }
+
+    if (mapArgs.count("/randsendtest"))
+    {
+        if (!mapArgs["/randsendtest"].empty())
+            _beginthread(ThreadRandSendTest, 0, new string(mapArgs["/randsendtest"]));
+        else
+            fRandSendTest = true;
+        fDebug = true;
     }
 
     return true;
@@ -3644,6 +3610,19 @@ void CMyApp::OnFatalException()
 
 
 
+void MainFrameRepaint()
+{
+    // This is called by network code that shouldn't access pframeMain
+    // directly because it could still be running after the UI is closed.
+    if (pframeMain)
+    {
+        printf("MainFrameRepaint()\n");
+        wxPaintEvent event;
+        pframeMain->Refresh();
+        pframeMain->AddPendingEvent(event);
+    }
+}
+
 
 
 typedef WINSHELLAPI BOOL WINAPI (*PSHGETSPECIALFOLDERPATHA)(HWND hwndOwner, LPSTR lpszPath, int nFolder, BOOL fCreate);
@@ -3687,7 +3666,7 @@ string StartupShortcutPath()
 
 bool GetStartOnSystemStartup()
 {
-    return wxFileExists(StartupShortcutPath());
+    return FileExists(StartupShortcutPath().c_str());
 }
 
 void SetStartOnSystemStartup(bool fAutoStart)
@@ -3748,3 +3727,79 @@ void SetStartOnSystemStartup(bool fAutoStart)
 
 
 
+
+// randsendtest to bitcoin address
+void ThreadRandSendTest(void* parg)
+{
+    string strAddress = *(string*)parg;
+    uint160 hash160;
+    if (!AddressToHash160(strAddress, hash160))
+    {
+        wxMessageBox(strprintf("ThreadRandSendTest: Bitcoin address '%s' not valid  ", strAddress.c_str()));
+        return;
+    }
+
+    while (!fShutdown)
+    {
+        Sleep(GetRand(30) * 1000 + 100);
+
+        // Message
+        CWalletTx wtx;
+        wtx.mapValue["to"] = strAddress;
+        wtx.mapValue["from"] = addrLocalHost.ToString();
+        static int nRep;
+        wtx.mapValue["message"] = strprintf("randsendtest %d\n", ++nRep);
+
+        // Value
+        int64 nValue = (GetRand(9) + 1) * 100 * CENT;
+        if (GetBalance() < nValue)
+        {
+            wxMessageBox("Out of money  ");
+            while (GetBalance() < 1000)
+                Sleep(1000);
+        }
+        nValue += (nRep % 100) * CENT;
+
+        // Send to bitcoin address
+        CScript scriptPubKey;
+        scriptPubKey << OP_DUP << OP_HASH160 << hash160 << OP_EQUALVERIFY << OP_CHECKSIG;
+
+        if (fShutdown)
+            return;
+        if (!SendMoney(scriptPubKey, nValue, wtx))
+            return;
+    }
+}
+
+
+// randsendtest to any connected node
+void RandSend()
+{
+    while (vNodes.empty())
+        Sleep(1000);
+    CAddress addr;
+    CRITICAL_BLOCK(cs_vNodes)
+        addr = vNodes[GetRand(vNodes.size())]->addr;
+
+    // Message
+    CWalletTx wtx;
+    wtx.mapValue["to"] = addr.ToString();
+    wtx.mapValue["from"] = addrLocalHost.ToString();
+    static int nRep;
+    wtx.mapValue["message"] = strprintf("randsendtest %d\n", ++nRep);
+
+    // Value
+    int64 nValue = (GetRand(999) + 1) * CENT;
+    if (GetBalance() < nValue)
+    {
+        wxMessageBox("Out of money  ");
+        return;
+    }
+
+    // Send to IP address
+    if (fShutdown)
+        return;
+    CSendingDialog* pdialog = new CSendingDialog(pframeMain, addr, nValue, wtx);
+    if (!pdialog->Show())
+        wxMessageBox("ShowModal Failed  ");
+}

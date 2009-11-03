@@ -34,6 +34,7 @@ extern int nBestHeight;
 extern uint256 hashBestChain;
 extern CBlockIndex* pindexBest;
 extern unsigned int nTransactionsUpdated;
+extern string strSetDataDir;
 extern int nDropMessagesTest;
 
 // Settings
@@ -49,6 +50,7 @@ extern int nLimitProcessors;
 
 
 
+string GetAppDir();
 bool CheckDiskSpace(int64 nAdditionalBytes=0);
 FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode="rb");
 FILE* AppendBlockFile(unsigned int& nFileRet);
@@ -403,10 +405,10 @@ public:
     {
         // Time based nLockTime implemented in 0.1.6,
         // do not use time based until most 0.1.5 nodes have upgraded.
-        if (nLockTime == 0)
-            return true;
         if (nBlockTime == 0)
             nBlockTime = GetAdjustedTime();
+        if (nLockTime == 0)
+            return true;
         if (nLockTime < (nLockTime < 500000000 ? nBestHeight : nBlockTime))
             return true;
         foreach(const CTxIn& txin, vin)
@@ -625,8 +627,6 @@ public:
 
     // memory only
     mutable bool fMerkleVerified;
-    mutable bool fGetCreditCached;
-    mutable int64 nGetCreditCached;
 
 
     CMerkleTx()
@@ -644,22 +644,14 @@ public:
         hashBlock = 0;
         nIndex = -1;
         fMerkleVerified = false;
-        fGetCreditCached = false;
-        nGetCreditCached = 0;
     }
 
-    int64 GetCredit(bool fUseCache=false) const
+    int64 GetCredit() const
     {
         // Must wait until coinbase is safely deep enough in the chain before valuing it
         if (IsCoinBase() && GetBlocksToMaturity() > 0)
             return 0;
-
-        // GetBalance can assume transactions in mapWallet won't change
-        if (fUseCache && fGetCreditCached)
-            return nGetCreditCached;
-        nGetCreditCached = CTransaction::GetCredit();
-        fGetCreditCached = true;
-        return nGetCreditCached;
+        return CTransaction::GetCredit();
     }
 
     IMPLEMENT_SERIALIZE

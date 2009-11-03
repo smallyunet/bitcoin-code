@@ -61,19 +61,18 @@ CDB::CDB(const char* pszFile, const char* pszMode, bool fTxn) : pdb(NULL)
         {
             if (fShutdown)
                 return;
-            string strDataDir = GetDataDir();
-            string strLogDir = strDataDir + "\\database";
-            _mkdir(strLogDir.c_str());
-            string strErrorFile = strDataDir + "\\db.log";
-            printf("dbenv.open strLogDir=%s strErrorFile=%s\n", strLogDir.c_str(), strErrorFile.c_str());
+            string strAppDir = GetAppDir();
+            string strLogDir = strAppDir + "\\database";
+            filesystem::create_directory(strLogDir.c_str());
+            printf("dbenv.open strAppDir=%s\n", strAppDir.c_str());
 
             dbenv.set_lg_dir(strLogDir.c_str());
             dbenv.set_lg_max(10000000);
             dbenv.set_lk_max_locks(10000);
             dbenv.set_lk_max_objects(10000);
-            dbenv.set_errfile(fopen(strErrorFile.c_str(), "a")); /// debug
+            dbenv.set_errfile(fopen("db.log", "a")); /// debug
             ///dbenv.log_set_config(DB_LOG_AUTO_REMOVE, 1); /// causes corruption
-            ret = dbenv.open(strDataDir.c_str(),
+            ret = dbenv.open(strAppDir.c_str(),
                              DB_CREATE     |
                              DB_INIT_LOCK  |
                              DB_INIT_LOG   |
@@ -140,8 +139,6 @@ void DBFlush(bool fShutdown)
     // Flush log data to the actual data file
     //  on all files that are not in use
     printf("DBFlush(%s)\n", fShutdown ? "true" : "false");
-    if (!fDbEnvInit)
-        return;
     CRITICAL_BLOCK(cs_db)
     {
         dbenv.txn_checkpoint(0, 0, 0);
@@ -424,7 +421,7 @@ bool CAddrDB::LoadAddresses()
                 while (fgets(psz, sizeof(psz), filein))
                 {
                     CAddress addr(psz, NODE_NETWORK);
-                    if (addr.IsValid())
+                    if (addr.ip != 0)
                     {
                         AddAddress(*this, addr);
                         mapIRCAddresses.insert(make_pair(addr.GetKey(), addr));
@@ -642,7 +639,7 @@ bool LoadWallet(bool& fFirstRunRet)
         CWalletDB().WriteDefaultKey(keyUser.GetPubKey());
     }
 
-    _beginthread(ThreadFlushWalletDB, 0, NULL);
+   	thread(ThreadFlushWalletDB);
     return true;
 }
 
@@ -679,10 +676,10 @@ void ThreadFlushWalletDB(void* parg)
                     {
                         // Flush wallet.dat so it's self contained
                         nLastFlushed == nWalletDBUpdated;
-                        int64 nStart = GetTimeMillis();
+                        int64 nStart = PerformanceCounter();
                         dbenv.txn_checkpoint(0, 0, 0);
                         dbenv.lsn_reset(strFile.c_str(), 0);
-                        printf("Flushed wallet.dat %"PRI64d"ms\n", GetTimeMillis() - nStart);
+                        printf("Flushed wallet.dat %15"PRI64d"\n", PerformanceCounter() - nStart);
                         mapFileUseCount.erase(mi++);
                     }
                 }
